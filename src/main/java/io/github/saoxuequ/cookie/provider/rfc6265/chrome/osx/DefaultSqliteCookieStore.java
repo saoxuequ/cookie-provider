@@ -9,6 +9,8 @@ import io.github.saoxuequ.cookie.provider.rfc6265.core.Cookie;
 import org.apache.commons.lang3.ArrayUtils;
 import org.apache.commons.lang3.StringUtils;
 
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.sql.*;
 import java.util.*;
 
@@ -43,9 +45,9 @@ public class DefaultSqliteCookieStore implements ReadOnlyCookieStore {
         ) {
             while (resultSet.next()) {
                 String name = resultSet.getString("name");
-                String val = decryptVal(resultSet.getBytes("encrypted_value"));
-                String expiryTime = resultSet.getString("expires_utc");
                 String domain = resultSet.getString("host_key");
+                String val = decryptVal(domain, resultSet.getBytes("encrypted_value"));
+                String expiryTime = resultSet.getString("expires_utc");
                 String path = resultSet.getString("path");
                 String creationTime = resultSet.getTimestamp("creation_utc").toString();
                 String lastAccessTime = resultSet.getString("last_access_utc");
@@ -61,6 +63,15 @@ public class DefaultSqliteCookieStore implements ReadOnlyCookieStore {
         return Collections.unmodifiableList(cookies);
     }
 
+    private byte[] sha256(String str) {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            return digest.digest(str.getBytes(StandardCharsets.UTF_8));
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+    }
+
     private <T> T getOrDefault(T val, T defaultVal) {
         if (Objects.isNull(val)) {
             return defaultVal;
@@ -68,13 +79,35 @@ public class DefaultSqliteCookieStore implements ReadOnlyCookieStore {
         return val;
     }
 
-    private String decryptVal(byte[] encryptedByte) throws SQLException, CipherException {
+    private String decryptVal(String domain, byte[] encryptedByte) throws CipherException {
         if (ArrayUtils.isEmpty(encryptedByte) || encryptedByte.length < 3) {
             return StringUtils.EMPTY;
         }
+
         // 加密后增加了v10或者v11前缀需要去掉
-        encryptedByte = Arrays.copyOfRange(encryptedByte, 3, encryptedByte.length);
-        return new String(cipher.decrypt(encryptedByte));
+        byte[] value = Arrays.copyOfRange(encryptedByte, 3, encryptedByte.length);
+        value = cipher.decrypt(value);
+        byte[] domainSha = sha256(domain);
+        if (startWith(value, domainSha)) {
+            value = Arrays.copyOfRange(value, domainSha.length, encryptedByte.length);
+        }
+
+        return new String(value).trim();
+    }
+
+    private boolean startWith(byte[] arr, byte[] prefix) {
+        if (arr == null || prefix == null) {
+            return arr == null && prefix == null;
+        }
+        if (prefix.length > arr.length) {
+            return false;
+        }
+        for (int i = 0; i < prefix.length; i++) {
+            if (prefix[i] != arr[i]) {
+                return false;
+            }
+        }
+        return true;
     }
 
     @Override
